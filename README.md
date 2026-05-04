@@ -1,5 +1,7 @@
 # Rinha Fraud API (.NET)
 
+![Ilustração sobre prevenção de fraude em pagamentos: alertas, transação suspeita e segurança](docs/images/fraude-pagamentos.png)
+
 Implementação em **ASP.NET Core** para a [Rinha de Backend 2026 — Detecção de fraude com busca vetorial](https://github.com/zanfranceschi/rinha-de-backend-2026). O desafio completo está na documentação oficial (por exemplo [docs/br/README.md](https://github.com/zanfranceschi/rinha-de-backend-2026/blob/main/docs/br/README.md)).
 
 ## O que este repositório faz
