@@ -1,0 +1,63 @@
+## Build
+[Bb]in/
+[Oo]bj/
+[Bb]uild/
+[Ll]og/
+[Ll]ogs/
+[Aa]rtifacts/
+*.cache
+
+## Visual Studio
+.vs/
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vscode/
+
+## Rider / JetBrains
+.idea/
+*.sln.iml
+
+## ReSharper / dotCover
+*.DotSettings.user
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.dotCover
+
+## NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+project.lock.json
+project.fragment.lock.json
+
+## Test & coverage
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coveragexml
+
+## Publish (perfis com segredos)
+**/PublishProfiles/*.pubxml.user
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Local env / segredos
+.env
+.env.*
+*.pfx
+appsettings.*.local.json
+secrets.json
+
+## Rinha — dataset / artefatos locais (gerados ou grandes)
+references.bin
+**/data/references.bin
+**/data/*.bin
+*.json.gz
+example-references.json
+test.bin
