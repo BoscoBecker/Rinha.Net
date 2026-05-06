@@ -1,0 +1,7 @@
+{
+    "participants": ["João Bosco"],
+    "social": ["https://github.com/boscobecker"],
+    "source-code-repo": "https://github.com/BoscoBecker/Rinha.Net",
+    "stack": ["csharp", "dotnet", "nginx", "docker","aspnetcore"],
+    "open_to_work": true
+}
