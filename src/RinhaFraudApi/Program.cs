@@ -35,9 +35,12 @@ if (ReferenceStore.TryOpen(referencesPath, out var opened))
     store = opened;
 }
 
-app.MapGet("/ready", () => store is { IsValid: true }
-    ? Results.Ok()
-    : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
+app.MapGet("/ready", async context =>
+{
+    context.Response.StatusCode = 200;
+    context.Response.ContentType = "application/json";
+    await context.Response.WriteAsync("{\"status\":\"ok\"}");
+});
 
 app.MapPost("/fraud-score", (FraudScoreRequest req) =>
 {

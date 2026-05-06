@@ -3,6 +3,11 @@
 # RAM: 32M + 155M + 155M = 342M (máx. permitido: 350M)
 # Topologia: cliente → nginx (porta 9999) → round-robin → api1 | api2
 
+# Rinha Backend 2026 — limites somados (deploy.resources):
+# CPU: 0.05 + 0.475 + 0.475 = 1.00
+# RAM: 32M + 155M + 155M = 342M (máx. permitido: 350M)
+# Topologia: cliente → nginx (porta 9999) → round-robin → api1 | api2
+
 services:
   nginx:
     image: nginx:1.27-alpine
@@ -23,10 +28,7 @@ services:
           memory: 32M
 
   api1:
-    image: rinha-fraud-api:local
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: boscobecker/rinha-fraud-api:latest
     platform: linux/amd64
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
@@ -43,10 +45,7 @@ services:
           memory: 155M
 
   api2:
-    image: rinha-fraud-api:local
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: boscobecker/rinha-fraud-api:latest
     platform: linux/amd64
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
