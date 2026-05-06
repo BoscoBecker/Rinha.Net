@@ -2,7 +2,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
 WORKDIR /src
 
-COPY RinhaFraud.sln ./
+COPY RinhaFraud.slnx ./
 COPY src/ ./src/
 COPY tools/ ./tools/
 
