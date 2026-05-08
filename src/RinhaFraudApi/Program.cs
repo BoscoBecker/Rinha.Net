@@ -8,8 +8,14 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
-    o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;    
 });
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.AddServerHeader = false;
+    options.Limits.MaxConcurrentConnections = 1000;
+});
+builder.Logging.ClearProviders();
 
 var app = builder.Build();
 var referencesPath = Environment.GetEnvironmentVariable("REFERENCES_PATH") ?? Path.Combine(AppContext.BaseDirectory, "data", "references.bin");

@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.MemoryMappedFiles;
+using System.Numerics;
+using System.Runtime.Intrinsics.X86;
 
 namespace RinhaFraudApi.Services;
 
@@ -107,13 +109,29 @@ public sealed class ReferenceStore : IDisposable
         var headerSize = 13u;
 
         var filled = 0;
+        var vn = Vector<float>.Count;
+        var fullBlocks = Dimensions / vn;
+        Span<Vector<float>> qBlocks = stackalloc Vector<float>[fullBlocks];
         fixed (float* q = query)
         {
+            ReadOnlySpan<float> qs = new(q, Dimensions);
+            for (var b = 0; b < fullBlocks; b++)
+            {
+                qBlocks[b] = new Vector<float>(qs.Slice(b * vn, vn));
+            }
+
             for (nuint i = 0; i < _count; i++)
             {
                 var row = headerSize + i * (nuint)rowStride;
-                var distSq = DistanceSquared(q, _ptr + row);
-                var fraud = _ptr[row + (nuint)(Dimensions * sizeof(float))] != 0;
+                var rowPtr = _ptr + row;
+
+                if (Sse.IsSupported && i + 1 < _count)
+                {
+                    Sse.Prefetch0(rowPtr + rowStride);
+                }
+
+                var distSq = DistanceSquared(qBlocks, fullBlocks, vn, q, rowPtr);
+                var fraud = rowPtr[(nuint)(Dimensions * sizeof(float))] != 0;
 
                 if (filled < K)
                 {
@@ -155,13 +173,31 @@ public sealed class ReferenceStore : IDisposable
         return frauds;
     }
 
-    private static unsafe double DistanceSquared(float* query, byte* rowVec)
+    /// <summary>
+    /// Distância euclidiana ao quadrado: blocos SIMD para dimensões alinhadas a <see cref="Vector{T}.Count"/>,
+    /// cauda escalar; query pré-fatada em <paramref name="qBlocks"/> (uma vez por busca).
+    /// </summary>
+    private static unsafe double DistanceSquared(
+        ReadOnlySpan<Vector<float>> qBlocks,
+        int fullBlocks,
+        int vn,
+        float* q,
+        byte* rowVec)
     {
-        double sum = 0;
         var vf = (float*)rowVec;
-        for (var d = 0; d < Dimensions; d++)
+        double sum = 0;
+        var d = 0;
+        for (var b = 0; b < fullBlocks; b++)
         {
-            var diff = query[d] - vf[d];
+            var vv = new Vector<float>(new ReadOnlySpan<float>(vf + d, vn));
+            var diff = qBlocks[b] - vv;
+            sum += Vector.Sum(diff * diff);
+            d += vn;
+        }
+
+        for (; d < Dimensions; d++)
+        {
+            var diff = q[d] - vf[d];
             sum += diff * diff;
         }
 
