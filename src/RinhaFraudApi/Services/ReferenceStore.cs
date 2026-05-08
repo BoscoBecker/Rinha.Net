@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.MemoryMappedFiles;
@@ -10,36 +9,21 @@ public sealed class ReferenceStore : IDisposable
 {
     public const int Dimensions = 14;
     public const int K = 5;
-
-    /// <summary>Número de células do grid: 2^14 (uma bit por dimensão).</summary>
     private const int CellCount = 1 << 14;
-
-    /// <summary>Magic 'R','N','F','1' read as little-endian uint32 from file bytes.</summary>
     private const uint FileMagic = 0x3146_4E52u;
-
     private readonly MemoryMappedFile? _mmf;
     private readonly MemoryMappedViewAccessor? _accessor;
     private readonly unsafe byte* _ptr;
     private readonly nuint _count;
     private readonly bool _valid;
-
-    private readonly float[] _dimMin;
-    private readonly float[] _dimMax;
     private readonly float[] _dimMid;
-
-    /// <summary>Limites [cell * 14 + d] da caixa AABB da célula no espaço normalizado (poda exata).</summary>
-    private readonly float[] _cellLo;
-
-    private readonly float[] _cellHi;
-
-    /// <summary>Prefixo: length CellCount+1; pontos da célula c estão em [_cellIndices[offsets[c]], offsets[c+1]).</summary>
     private readonly int[] _cellOffsets;
-
     private int[] _cellIndices;
-
+    private readonly int[] _neighborMasks;
+    private readonly int _maxCandidates;
     public long Count => (long)_count;
 
-    public static bool TryOpen(string path, [NotNullWhen(true)] out ReferenceStore? store)
+    public static bool TryOpen(string path, int hammingRadius, int maxCandidates, [NotNullWhen(true)] out ReferenceStore? store)
     {
         store = null;
         if (!File.Exists(path))
@@ -49,7 +33,7 @@ public sealed class ReferenceStore : IDisposable
 
         try
         {
-            store = new ReferenceStore(path);
+            store = new ReferenceStore(path, hammingRadius, maxCandidates);
             if (!store._valid)
             {
                 store.Dispose();
@@ -67,15 +51,13 @@ public sealed class ReferenceStore : IDisposable
         }
     }
 
-    private unsafe ReferenceStore(string path)
+    private unsafe ReferenceStore(string path, int hammingRadius, int maxCandidates)
     {
-        _dimMin = new float[Dimensions];
-        _dimMax = new float[Dimensions];
         _dimMid = new float[Dimensions];
-        _cellLo = new float[CellCount * Dimensions];
-        _cellHi = new float[CellCount * Dimensions];
         _cellOffsets = new int[CellCount + 1];
         _cellIndices = Array.Empty<int>();
+        _neighborMasks = BuildNeighborMasks(Math.Clamp(hammingRadius, 0, Dimensions));
+        _maxCandidates = Math.Max(K, maxCandidates);
 
         _mmf = MemoryMappedFile.CreateFromFile(
             path,
@@ -117,42 +99,7 @@ public sealed class ReferenceStore : IDisposable
         var rowStride = Dimensions * sizeof(float) + 1;
         var headerSize = 13u;
 
-        for (var d = 0; d < Dimensions; d++)
-        {
-            _dimMin[d] = float.PositiveInfinity;
-            _dimMax[d] = float.NegativeInfinity;
-        }
-
-        for (nuint i = 0; i < _count; i++)
-        {
-            var row = headerSize + i * (nuint)rowStride;
-            var vf = (float*)(_ptr + row);
-            for (var d = 0; d < Dimensions; d++)
-            {
-                var v = vf[d];
-                if (v < _dimMin[d])
-                {
-                    _dimMin[d] = v;
-                }
-
-                if (v > _dimMax[d])
-                {
-                    _dimMax[d] = v;
-                }
-            }
-        }
-
-        for (var d = 0; d < Dimensions; d++)
-        {
-            if (_dimMax[d] - _dimMin[d] < 1e-9f)
-            {
-                _dimMin[d] -= 1e-6f;
-                _dimMax[d] += 1e-6f;
-            }
-        }
-
         ComputeMedianMids(rowStride, headerSize);
-        FillCellBoundingBoxes();
 
         var perCell = new int[CellCount];
         for (nuint i = 0; i < _count; i++)
@@ -178,9 +125,6 @@ public sealed class ReferenceStore : IDisposable
         }
     }
 
-    /// <summary>
-    /// Separação por mediana amostrada (melhor que min+max/2 em dados enviesados, mantém 2^14 células).
-    /// </summary>
     private unsafe void ComputeMedianMids(int rowStride, uint headerSize)
     {
         const int maxSamples = 65536;
@@ -211,20 +155,6 @@ public sealed class ReferenceStore : IDisposable
         }
     }
 
-    private void FillCellBoundingBoxes()
-    {
-        for (var c = 0; c < CellCount; c++)
-        {
-            var b = c * Dimensions;
-            for (var d = 0; d < Dimensions; d++)
-            {
-                var upper = ((uint)c & (1u << d)) != 0;
-                _cellLo[b + d] = upper ? _dimMid[d] : _dimMin[d];
-                _cellHi[b + d] = upper ? _dimMax[d] : _dimMid[d];
-            }
-        }
-    }
-
     private unsafe uint ComputeCellId(float* v)
     {
         uint id = 0;
@@ -239,47 +169,27 @@ public sealed class ReferenceStore : IDisposable
         return id;
     }
 
-    /// <summary>
-    /// Distância ao quadrado mínima do ponto <paramref name="q"/> à caixa da célula (AABB pré-computada).
-    /// </summary>
-    private unsafe double MinDistSqPointToCell(float* q, int cellId)
-    {
-        var b = cellId * Dimensions;
-        var vn = Vector<float>.Count;
-        double sum = 0;
-        var d = 0;
-        for (; d + vn <= Dimensions; d += vn)
-        {
-            var qv = new Vector<float>(new ReadOnlySpan<float>(q + d, vn));
-            var lov = new Vector<float>(_cellLo.AsSpan(b + d, vn));
-            var hiv = new Vector<float>(_cellHi.AsSpan(b + d, vn));
-            var below = Vector.LessThan(qv, lov);
-            var above = Vector.GreaterThan(qv, hiv);
-            var t = Vector.ConditionalSelect(below, lov - qv, Vector.ConditionalSelect(above, qv - hiv, Vector<float>.Zero));
-            sum += Vector.Sum(t * t);
-        }
-
-        for (; d < Dimensions; d++)
-        {
-            var lo = _cellLo[b + d];
-            var hi = _cellHi[b + d];
-            var qd = q[d];
-            if (qd < lo)
-            {
-                var t = lo - qd;
-                sum += t * t;
-            }
-            else if (qd > hi)
-            {
-                var t = qd - hi;
-                sum += t * t;
-            }
-        }
-
-        return sum;
-    }
-
     public bool IsValid => _valid;
+
+    private static int[] BuildNeighborMasks(int hammingRadius)
+    {
+        var masks = new List<int>(CellCount);
+        for (var mask = 0; mask < CellCount; mask++)
+        {
+            if (BitOperations.PopCount((uint)mask) <= hammingRadius)
+            {
+                masks.Add(mask);
+            }
+        }
+
+        var result = masks.ToArray();
+        Array.Sort(result, static (a, b) =>
+        {
+            var byBits = BitOperations.PopCount((uint)a).CompareTo(BitOperations.PopCount((uint)b));
+            return byBits != 0 ? byBits : a.CompareTo(b);
+        });
+        return result;
+    }
 
     public unsafe int SearchKnnFraudCount(ReadOnlySpan<float> query)
     {
@@ -308,95 +218,65 @@ public sealed class ReferenceStore : IDisposable
         var fullBlocks = Dimensions / vn;
         Span<Vector<float>> qBlocks = stackalloc Vector<float>[fullBlocks];
 
-        var activeCells = 0;
-        for (var c = 0; c < CellCount; c++)
+        fixed (float* q = query)
         {
-            if (_cellOffsets[c + 1] > _cellOffsets[c])
+            ReadOnlySpan<float> qs = new(q, Dimensions);
+            for (var b = 0; b < fullBlocks; b++)
             {
-                activeCells++;
+                qBlocks[b] = new Vector<float>(qs.Slice(b * vn, vn));
             }
-        }
 
-        var orderDist = ArrayPool<double>.Shared.Rent(activeCells);
-        var orderCell = ArrayPool<int>.Shared.Rent(activeCells);
-        try
-        {
-            var o = 0;
-            fixed (float* q = query)
+            var queryCell = ComputeCellId(q);
+            var dWorst = double.PositiveInfinity;
+            var checkedCandidates = 0;
+            foreach (var mask in _neighborMasks)
             {
-                ReadOnlySpan<float> qs = new(q, Dimensions);
-                for (var b = 0; b < fullBlocks; b++)
+                var c = (int)(queryCell ^ (uint)mask);
+                var rowBegin = _cellOffsets[c];
+                var rowEnd = _cellOffsets[c + 1];
+                for (var j = rowBegin; j < rowEnd; j++)
                 {
-                    qBlocks[b] = new Vector<float>(qs.Slice(b * vn, vn));
-                }
+                    if (checkedCandidates >= _maxCandidates && filled == K)
+                    {
+                        goto Done;
+                    }
 
-                for (var c = 0; c < CellCount; c++)
-                {
-                    var start = _cellOffsets[c];
-                    var end = _cellOffsets[c + 1];
-                    if (start >= end)
+                    checkedCandidates++;
+
+                    var i = (nuint)_cellIndices[j];
+                    var row = headerSize + i * (nuint)rowStride;
+                    var rowPtr = _ptr + row;
+
+                    var distSq = DistanceSquared(qBlocks, fullBlocks, vn, q, rowPtr);
+                    var fraud = rowPtr[(nuint)(Dimensions * sizeof(float))] != 0;
+
+                    if (filled < K)
+                    {
+                        bestD[filled] = distSq;
+                        isFraud[filled] = fraud;
+                        filled++;
+                        if (filled == K)
+                        {
+                            dWorst = MaxK(bestD);
+                        }
+
+                        continue;
+                    }
+
+                    if (distSq >= dWorst)
                     {
                         continue;
                     }
 
-                    orderDist[o] = MinDistSqPointToCell(q, c);
-                    orderCell[o] = c;
-                    o++;
-                }
-
-                Array.Sort(orderDist, orderCell, 0, activeCells);
-
-                var dWorst = double.PositiveInfinity;
-                for (var ci = 0; ci < activeCells; ci++)
-                {
-                    var cellLo = orderDist[ci];
-                    if (filled == K && cellLo > dWorst)
-                    {
-                        break;
-                    }
-
-                    var c = orderCell[ci];
-                    var rowBegin = _cellOffsets[c];
-                    var rowEnd = _cellOffsets[c + 1];
-                    for (var j = rowBegin; j < rowEnd; j++)
-                    {
-                        var i = (nuint)_cellIndices[j];
-                        var row = headerSize + i * (nuint)rowStride;
-                        var rowPtr = _ptr + row;
-
-                        var distSq = DistanceSquared(qBlocks, fullBlocks, vn, q, rowPtr);
-                        var fraud = rowPtr[(nuint)(Dimensions * sizeof(float))] != 0;
-
-                        if (filled < K)
-                        {
-                            bestD[filled] = distSq;
-                            isFraud[filled] = fraud;
-                            filled++;
-                            if (filled == K)
-                            {
-                                dWorst = MaxK(bestD);
-                            }
-
-                            continue;
-                        }
-
-                        if (distSq >= dWorst)
-                        {
-                            continue;
-                        }
-
-                        var worstSlot = FirstSlotOfMaxDistance(bestD);
-                        bestD[worstSlot] = distSq;
-                        isFraud[worstSlot] = fraud;
-                        dWorst = MaxK(bestD);
-                    }
+                    var worstSlot = FirstSlotOfMaxDistance(bestD);
+                    bestD[worstSlot] = distSq;
+                    isFraud[worstSlot] = fraud;
+                    dWorst = MaxK(bestD);
                 }
             }
-        }
-        finally
-        {
-            ArrayPool<double>.Shared.Return(orderDist);
-            ArrayPool<int>.Shared.Return(orderCell);
+
+        Done:
+            ;
         }
 
         var frauds = 0;
@@ -426,7 +306,6 @@ public sealed class ReferenceStore : IDisposable
         return m;
     }
 
-    /// <summary>Mesmo critério do scan linear: índice do maior valor em bestD[0..k-1] com empate → menor índice.</summary>
     private static int FirstSlotOfMaxDistance(ReadOnlySpan<double> bestD)
     {
         var worstIdx = 0;
@@ -443,10 +322,6 @@ public sealed class ReferenceStore : IDisposable
         return worstIdx;
     }
 
-    /// <summary>
-    /// Distância euclidiana ao quadrado: blocos SIMD para dimensões alinhadas a <see cref="Vector{T}.Count"/>,
-    /// cauda escalar; query pré-fatada em <paramref name="qBlocks"/> (uma vez por busca).
-    /// </summary>
     private static unsafe double DistanceSquared(
         ReadOnlySpan<Vector<float>> qBlocks,
         int fullBlocks,

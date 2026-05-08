@@ -31,8 +31,10 @@ services:
     image: boscobecker/rinha-fraud-api:latest
     platform: linux/amd64
     environment:
-      ASPNETCORE_URLS: http://0.0.0.0:8080
+      HTTP_PORTS: "8080"
       REFERENCES_PATH: /app/data/references.bin
+      KNN_HAMMING_RADIUS: "1"
+      KNN_MAX_CANDIDATES: "2048"
       DOTNET_gcServer: "1"
     expose:
       - "8080"
@@ -48,8 +50,10 @@ services:
     image: boscobecker/rinha-fraud-api:latest
     platform: linux/amd64
     environment:
-      ASPNETCORE_URLS: http://0.0.0.0:8080
+      HTTP_PORTS: "8080"
       REFERENCES_PATH: /app/data/references.bin
+      KNN_HAMMING_RADIUS: "1"
+      KNN_MAX_CANDIDATES: "2048"
       DOTNET_gcServer: "1"
     expose:
       - "8080"

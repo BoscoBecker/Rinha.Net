@@ -35,7 +35,8 @@ COPY --from=build /app/publish .
 COPY --from=build /app/data/references.bin ./data/references.bin
 
 ENV REFERENCES_PATH=/app/data/references.bin
-ENV ASPNETCORE_URLS=http://0.0.0.0:8080
+# Porta única (evita warn "Overriding HTTP_PORTS" quando URLS e HTTP_PORTS competem com a imagem aspnet).
+ENV HTTP_PORTS=8080
 EXPOSE 8080
 
 ENTRYPOINT ["dotnet", "RinhaFraudApi.dll"]

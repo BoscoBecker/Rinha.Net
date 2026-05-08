@@ -5,10 +5,9 @@ using RinhaFraudApi.Models;
 using RinhaFraudApi.Services;
 
 ThreadPool.GetMinThreads(out var wt, out var io);
-ThreadPool.SetMinThreads(Math.Max(wt, 64), Math.Max(io, 64));
-
+ThreadPool.SetMinThreads(Math.Max(wt, 32), Math.Max(io, 32));
 var builder = WebApplication.CreateBuilder(args);
-
+builder.Logging.ClearProviders();
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
@@ -16,16 +15,23 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.NumberHandling =
         JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.AllowNamedFloatingPointLiterals;
 });
+
 builder.WebHost.ConfigureKestrel(options =>
 {
     options.AddServerHeader = false;
-    options.Limits.MaxConcurrentConnections = 1000;
+    options.Limits.MaxConcurrentConnections = 2048;
+    options.Limits.MinRequestBodyDataRate = null;
+    options.Limits.MinResponseDataRate = null;
 });
-builder.Logging.ClearProviders();
 
 var app = builder.Build();
-// k-NN mmap: REFERENCES_PATH ou <base>/data/references.bin (arquivo). Sem arquivo válido, TryOpen falha → store null → /ready e /fraud-score em 503.
 var referencesPath = Environment.GetEnvironmentVariable("REFERENCES_PATH") ?? Path.Combine(AppContext.BaseDirectory, "data", "references.bin");
+var hammingRadius = int.TryParse(Environment.GetEnvironmentVariable("KNN_HAMMING_RADIUS"), out var radius)
+    ? Math.Clamp(radius, 0, ReferenceStore.Dimensions)
+    : 1;
+var maxCandidates = int.TryParse(Environment.GetEnvironmentVariable("KNN_MAX_CANDIDATES"), out var candidates)
+    ? Math.Max(ReferenceStore.K, candidates)
+    : 2048;
 var normalizationPath = Path.Combine(AppContext.BaseDirectory, "Resources", "normalization.json");
 var mccPath = Path.Combine(AppContext.BaseDirectory, "Resources", "mcc_risk.json");
 
@@ -35,11 +41,9 @@ var jsonRead = new JsonSerializerOptions
     ReadCommentHandling = JsonCommentHandling.Disallow,
 };
 
-var normalization = JsonSerializer.Deserialize<NormalizationConfig>(await File.ReadAllTextAsync(normalizationPath),jsonRead)
+var normalization = JsonSerializer.Deserialize<NormalizationConfig>(await File.ReadAllTextAsync(normalizationPath), jsonRead)
     ?? throw new InvalidOperationException("normalization.json inválido.");
-
-var mccRisk = JsonSerializer.Deserialize<Dictionary<string, double>>(
-    await File.ReadAllTextAsync(mccPath),jsonRead)
+var mccRisk = JsonSerializer.Deserialize<Dictionary<string, double>>(await File.ReadAllTextAsync(mccPath), jsonRead)
     ?? throw new InvalidOperationException("mcc_risk.json inválido.");
 
 var jsonBodyOptions = new JsonSerializerOptions
@@ -52,14 +56,21 @@ var jsonBodyOptions = new JsonSerializerOptions
 };
 
 ReferenceStore? store = null;
-if (ReferenceStore.TryOpen(referencesPath, out var opened))
+if (ReferenceStore.TryOpen(referencesPath, hammingRadius, maxCandidates, out var opened))
 {
     store = opened;
 }
 
 app.MapGet("/ready", async context =>
 {
-    context.Response.ContentType = "application/json";    
+    context.Response.ContentType = "application/json";
+    if (store is null || !store.IsValid)
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        await context.Response.WriteAsync("{\"status\":\"not_ready\",\"reason\":\"references_unavailable\"}");
+        return;
+    }
+
     context.Response.StatusCode = StatusCodes.Status200OK;
     await context.Response.WriteAsync("{\"status\":\"ok\"}");
 });
@@ -71,46 +82,59 @@ app.MapPost("/fraud-score", async (HttpRequest httpRequest, CancellationToken ca
         return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
     }
 
-    using var doc = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: cancellationToken);
-    var root = doc.RootElement;
-    var payload = root.ValueKind == JsonValueKind.Object
-        && root.TryGetProperty("request", out var reqEl)
-        && reqEl.ValueKind == JsonValueKind.Object
-        ? reqEl
-        : root;
-
-    FraudScoreRequest? req;
+    JsonDocument doc;
     try
     {
-        req = payload.Deserialize<FraudScoreRequest>(jsonBodyOptions);
+        doc = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: cancellationToken);
     }
-    catch (JsonException)
+    catch (BadHttpRequestException)
     {
         return Results.BadRequest();
     }
-
-    if (req is null)
+    catch (OperationCanceledException)
     {
-        return Results.BadRequest();
+        return Results.StatusCode(StatusCodes.Status408RequestTimeout);
     }
 
-    var vec = new float[ReferenceStore.Dimensions];
-    Vectorizer.BuildVector(req, mccRisk, normalization, vec.AsSpan());
-
-    var fraudCount = store.SearchKnnFraudCount(vec);
-    var fraudScore = fraudCount / 5.0;
-    if (double.IsNaN(fraudScore) || double.IsInfinity(fraudScore))
+    using (doc)
     {
-        fraudScore = 0;
+        var root = doc.RootElement;
+        var payload = root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("request", out var reqEl)
+            && reqEl.ValueKind == JsonValueKind.Object
+            ? reqEl
+            : root;
+        FraudScoreRequest? req;
+        try
+        {
+            req = payload.Deserialize<FraudScoreRequest>(jsonBodyOptions);
+        }
+        catch (JsonException)
+        {
+            return Results.BadRequest();
+        }
+
+        if (req is null)
+        {
+            return Results.BadRequest();
+        }
+
+        var vec = new float[ReferenceStore.Dimensions];
+        Vectorizer.BuildVector(req, mccRisk, normalization, vec.AsSpan());
+
+        var fraudCount = store.SearchKnnFraudCount(vec);
+        var responseJson = fraudCount switch
+        {
+            0 => "{\"approved\":true,\"fraud_score\":0}",
+            1 => "{\"approved\":true,\"fraud_score\":0.2}",
+            2 => "{\"approved\":true,\"fraud_score\":0.4}",
+            3 => "{\"approved\":false,\"fraud_score\":0.6}",
+            4 => "{\"approved\":false,\"fraud_score\":0.8}",
+            _ => "{\"approved\":false,\"fraud_score\":1}"
+        };
+
+        return Results.Text(responseJson, "application/json");
     }
-
-    var approved = fraudScore < 0.6;
-
-    return Results.Ok(new FraudScoreResponse
-    {
-        Approved = approved,
-        FraudScore = fraudScore,
-    });
 });
 
 app.Run();
