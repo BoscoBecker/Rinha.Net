@@ -52,7 +52,8 @@ public static class Vectorizer
         output[8] = ClampF((float)(c.TxCount24H / (double)n.MaxTxCount24H));
         output[9] = term.IsOnline ? 1f : 0f;
         output[10] = term.CardPresent ? 1f : 0f;
-        output[11] = IsUnknownMerchant(m.Id, c.KnownMerchants) ? 1f : 0f;
+        var known = c.KnownMerchants ?? Array.Empty<string>();
+        output[11] = IsUnknownMerchant(m.Id, known) ? 1f : 0f;
         output[12] = (float)(mccRisk.TryGetValue(m.Mcc, out var risk) ? risk : 0.5);
         output[13] = ClampF((float)(m.AvgAmount / n.MaxMerchantAvgAmount));
     }

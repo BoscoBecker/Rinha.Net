@@ -43,8 +43,11 @@ public sealed class CustomerDto
     [JsonPropertyName("tx_count_24h")]
     public required int TxCount24H { get; init; }
 
+    /// <summary>
+    /// API permite lista vazia; alguns clientes omitem o campo ou enviam null — tratar como [] no vetor.
+    /// </summary>
     [JsonPropertyName("known_merchants")]
-    public required IReadOnlyList<string> KnownMerchants { get; init; }
+    public IReadOnlyList<string>? KnownMerchants { get; init; }
 }
 
 public sealed class MerchantDto
