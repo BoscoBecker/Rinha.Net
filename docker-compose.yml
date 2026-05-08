@@ -1,7 +1,12 @@
 # Rinha Backend 2026 — limites somados (deploy.resources):
 # CPU: 0.05 + 0.475 + 0.475 = 1.00
 # RAM: 32M + 155M + 155M = 342M (máx. permitido: 350M)
-# Topologia: cliente → nginx (porta 9999) → round-robin → api1 | api2 
+# Topologia: cliente → nginx (porta 9999) → round-robin → api1 | api2
+
+# Rinha Backend 2026 — limites somados (deploy.resources):
+# CPU: 0.05 + 0.475 + 0.475 = 1.00
+# RAM: 32M + 155M + 155M = 342M (máx. permitido: 350M)
+# Topologia: cliente → nginx (porta 9999) → round-robin → api1 | api2
 
 services:
   nginx:
@@ -26,8 +31,10 @@ services:
     image: boscobecker/rinha-fraud-api:latest
     platform: linux/amd64
     environment:
-      ASPNETCORE_URLS: http://0.0.0.0:8080
+      HTTP_PORTS: "8080"
       REFERENCES_PATH: /app/data/references.bin
+      KNN_HAMMING_RADIUS: "1"
+      KNN_MAX_CANDIDATES: "2048"
       DOTNET_gcServer: "1"
     expose:
       - "8080"
@@ -43,8 +50,10 @@ services:
     image: boscobecker/rinha-fraud-api:latest
     platform: linux/amd64
     environment:
-      ASPNETCORE_URLS: http://0.0.0.0:8080
+      HTTP_PORTS: "8080"
       REFERENCES_PATH: /app/data/references.bin
+      KNN_HAMMING_RADIUS: "1"
+      KNN_MAX_CANDIDATES: "2048"
       DOTNET_gcServer: "1"
     expose:
       - "8080"
