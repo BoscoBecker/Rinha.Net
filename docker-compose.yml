@@ -28,7 +28,7 @@ services:
           memory: 32M
 
   api1:
-    image: boscobecker/rinha-fraud-api:latest
+    image: boscobecker/rinha-fraud-api:a568548
     platform: linux/amd64
     environment:
       HTTP_PORTS: "8080"
@@ -47,7 +47,7 @@ services:
           memory: 155M
 
   api2:
-    image: boscobecker/rinha-fraud-api:latest
+    image: boscobecker/rinha-fraud-api:a568548
     platform: linux/amd64
     environment:
       HTTP_PORTS: "8080"
